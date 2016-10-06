@@ -2,7 +2,7 @@
 LICENSING
 -------------------------------------------------
 
-daemoniker: Cross-platform daemonization tools.
+loopa: Arduino-esque event loop app framework, and other utilities.
     Copyright (C) 2016 Muterra, Inc.
     
     Contributors
@@ -44,14 +44,14 @@ logging.getLogger(__name__).addHandler(NullHandler())
 
 # Control * imports.
 __all__ = [
-    'Daemonizer',
-    'daemonize',
-    'SignalHandler1',
-    'IGNORE_SIGNAL',
-    'send',
-    'SIGINT',
-    'SIGTERM',
-    'SIGABRT',
+    # 'Daemonizer',
+    # 'daemonize',
+    # 'SignalHandler1',
+    # 'IGNORE_SIGNAL',
+    # 'send',
+    # 'SIGINT',
+    # 'SIGTERM',
+    # 'SIGABRT',
 ]
 
 
@@ -63,37 +63,20 @@ __all__ = [
 from . import exceptions
 from . import utils
 
-from ._signals_common import IGNORE_SIGNAL
-from ._signals_common import send
+# from ._signals_common import IGNORE_SIGNAL
+# from ._signals_common import send
 
-from .exceptions import SIGINT
-from .exceptions import SIGTERM
-from .exceptions import SIGABRT
+# from .exceptions import SIGINT
+# from .exceptions import SIGTERM
+# from .exceptions import SIGABRT
 
-# Add in toplevel stuff
-from .utils import platform_specificker
-platform_switch = platform_specificker(
-    linux_choice = 'unix',
-    win_choice = 'windows',
-    # Dunno if this is a good idea but might as well try
-    cygwin_choice = None,
-    osx_choice = 'unix',
-    other_choice = 'unix'
-)
-
-if platform_switch == 'unix':
-    from ._daemonize_unix import Daemonizer
-    from ._daemonize_unix import daemonize
-    
-    from ._signals_unix import SignalHandler1
-    
-elif platform_switch == 'windows':
-    from ._daemonize_windows import Daemonizer
-    from ._daemonize_windows import daemonize
-    
-    from ._signals_windows import SignalHandler1
-    
-else:
-    raise RuntimeError(
-        'Your runtime environment is unsupported by daemoniker.'
-    )
+# # Add in toplevel stuff
+# from .utils import platform_specificker
+# platform_switch = platform_specificker(
+#     linux_choice = 'unix',
+#     win_choice = 'windows',
+#     # Dunno if this is a good idea but might as well try
+#     cygwin_choice = None,
+#     osx_choice = 'unix',
+#     other_choice = 'unix'
+# )

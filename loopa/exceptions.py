@@ -2,7 +2,7 @@
 LICENSING
 -------------------------------------------------
 
-daemoniker: Cross-platform daemonization tools.
+loopa: Arduino-esque event loop app framework, and other utilities.
     Copyright (C) 2016 Muterra, Inc.
     
     Contributors
@@ -30,82 +30,23 @@ daemoniker: Cross-platform daemonization tools.
 ------------------------------------------------------
 '''
 
-import signal
+
+# ###############################################
+# Boilerplate
+# ###############################################
+
 
 # Control * imports.
 __all__ = [
     # Base class for all of the above
-    'DaemonikerException',
-    # These are daemonization/sighandling errors and exceptions
-    'SignalError',
-    # These are actual signals
-    'DaemonikerSignal',
-    'SIGABRT',
-    'SIGINT',
-    'SIGTERM',
+    'LoopaException',
+    # Others
 ]
 
 
-class DaemonikerException(Exception):
+class LoopaException(Exception):
     ''' This is suclassed for all exceptions and warnings, so that code
-    using daemoniker as an import can successfully catch all daemoniker
-    exceptions with a single except.
+    using loopa as an import can successfully catch all loopa exceptions
+    with a single except.
     '''
     pass
-
-
-# ###############################################
-# Signal handling errors and exceptions
-# ###############################################
-
-
-class SignalError(DaemonikerException, RuntimeError):
-    ''' This exception (or a subclass thereof) is raised for all issues
-    related to signal handling.
-    '''
-    pass
-
-
-# ###############################################
-# Signals themselves
-# ###############################################
-    
-    
-class _SignalMeta(type):
-    def __int__(self):
-        return self.SIGNUM
-
-
-class DaemonikerSignal(BaseException, metaclass=_SignalMeta):
-    ''' Subclasses of this exception are raised by all of the default
-    signal handlers defined using SignalHandlers.
-    
-    This subclasses BaseException because, when unhandled, it should
-    always be a system-exiting exception. That being said, it should not
-    subclass SystemExit, because that's a whole different can of worms.
-    '''
-    SIGNUM = -1
-    
-    def __int__(self):
-        return self.SIGNUM
-        
-        
-ReceivedSignal = DaemonikerSignal
-
-
-class SIGABRT(DaemonikerSignal):
-    ''' Raised upon receipt of SIGABRT.
-    '''
-    SIGNUM = int(signal.SIGABRT)
-
-
-class SIGINT(DaemonikerSignal):
-    ''' Raised upon receipt of SIGINT, CTRL_C_EVENT, CTRL_BREAK_EVENT.
-    '''
-    SIGNUM = int(signal.SIGINT)
-
-
-class SIGTERM(DaemonikerSignal):
-    ''' Raised upon receipt of SIGTERM.
-    '''
-    SIGNUM = int(signal.SIGTERM)

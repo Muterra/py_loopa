@@ -2,7 +2,7 @@
 LICENSING
 -------------------------------------------------
 
-loopa: Arduino-esque event loop framework and other utilities.
+loopa: Arduino-esque event loop app framework, and other utilities.
     Copyright (C) 2016 Muterra, Inc.
     
     Contributors
