@@ -77,6 +77,7 @@ class _WrappedEvent(asyncio.Event):
     ''' Adds an internal future to the event and gives it any expected
     methods.
     '''
+    
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.__result = None
@@ -189,10 +190,10 @@ async def run_coroutine_loopsafe(coro, loop):
     # This returns a concurrent.futures.Future, so we need to wait for it, but
     # we cannot block our event loop, soooo...
     thread_future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return wrap_threaded_future(fut)
+    return wrap_threaded_future(thread_future)
     
     
-async def call_coroutine_loopsafe(coro, loop):
+async def complete_coroutine_loopsafe(coro, loop):
     ''' Wrapper around run_coroutine_loopsafe that actuall returns the
     result of the coro (or raises its exception).
     '''
@@ -200,7 +201,7 @@ async def call_coroutine_loopsafe(coro, loop):
     return (await asyncio.wait_for(async_future))
             
             
-def call_coroutine_threadsafe(coro, loop):
+def complete_coroutine_threadsafe(coro, loop):
     ''' Wrapper on asyncio.run_coroutine_threadsafe that makes a coro
     behave as if it were called synchronously. In other words, instead
     of returning a future, it raises the exception or returns the coro's

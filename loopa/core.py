@@ -30,14 +30,17 @@ loopa: Arduino-esque event loop app framework, and other utilities.
 ------------------------------------------------------
 '''
 
+# External deps
 import logging
 import asyncio
-import abc
 import threading
 import weakref
 import traceback
 import collections
 import inspect
+
+# In-package deps
+from .utils import complete_coroutine_threadsafe
 
 
 # ###############################################
@@ -233,10 +236,10 @@ class TaskManager:
         ''' Stops us from within a different thread without waiting for
         closure.
         '''
-        if not self._startup_complete_flag.is_set():
-            raise RuntimeError('Cannot stop before startup is complete.')
-            
-        self._loop.call_soon_threadsafe(self._term_flag.set)
+        complete_coroutine_threadsafe(
+            coro = self.stop(),
+            loop = self._loop
+        )
         
     def stop_threadsafe(self, timeout=None):
         ''' Stops us from within a different thread.
@@ -258,8 +261,9 @@ class TaskManager:
             aborter = asyncio.ensure_future(self._term_flag.wait())
             worker = asyncio.ensure_future(self.task_run(*args, **kwargs))
             
-            # Wait to set the startup flag until we return control to the loop
-            self._loop.call_soon_threadsafe(self._startup_complete_flag.set)
+            # Don't wait to set the startup flag until we return control to the
+            # loop, because we already "started" the tasks.
+            self._startup_complete_flag.set()
             
             finished, pending = await asyncio.wait(
                 fs = {aborter, worker},
@@ -306,160 +310,37 @@ class LoopaTroopa(TaskManager):
     construct.
     
     Optionally, async def loop_stop may be defined for cleanup.
-    
-    LooperTrooper handles threading, graceful loop exiting, etc.
-    
-    if threaded evaluates to False, must call LooperTrooper().start() to
-    get the ball rolling.
-    
-    If aengel is not None, will immediately attempt to register self
-    with the aengel to guard against main thread completion causing an
-    indefinite hang.
-    
-    *args and **kwargs are passed to the required async def loop_init.
     '''
-    def __init__(self, threaded, thread_name=None, debug=False, aengel=None, *args, **kwargs):
-        if aengel is not None:
-            aengel.prepend_guardling(self)
-        
-        super().__init__(*args, **kwargs)
-        
-        self._startup_complete_flag = threading.Event()
-        self._shutdown_init_flag = None
-        self._shutdown_complete_flag = threading.Event()
-        self._debug = debug
-        self._death_timeout = 1
-        
-        if threaded:
-            self._loop = asyncio.new_event_loop()
-            # Set up a thread for the loop
-            self._thread = threading.Thread(
-                target = self.start,
-                args = args,
-                kwargs = kwargs,
-                # This may result in errors during closing.
-                # daemon = True,
-                # This isn't currently stable enough to close properly.
-                daemon = False,
-                name = thread_name
-            )
-            self._thread.start()
-            self._startup_complete_flag.wait()
-            
-        else:
-            self._loop = asyncio.get_event_loop()
-            # Declare the thread as nothing.
-            self._thread = None
         
     async def loop_init(self):
-        ''' This will be passed any *args and **kwargs from self.start,
-        either through __init__ if threaded is True, or when calling
-        self.start directly.
+        ''' Endpoint for cooperative multiple inheritance.
         '''
         pass
         
-    @abc.abstractmethod
     async def loop_run(self):
+        ''' Endpoint for cooperative multiple inheritance.
+        '''
         pass
         
     async def loop_stop(self):
+        ''' Endpoint for cooperative multiple inheritance.
+        '''
         pass
         
-    def start(self, *args, **kwargs):
-        ''' Handles everything needed to start the loop within the
-        current context/thread/whatever. May be extended, but MUST be
-        called via super().
+    async def task_run(self, *args, **kwargs):
+        ''' Wraps up all of the loop stuff.
         '''
         try:
-            self._loop.set_debug(self._debug)
+            await self.loop_init(*args, **kwargs)
             
-            if self._thread is not None:
-                asyncio.set_event_loop(self._loop)
-            
-            # Set up a shutdown event and then start the task
-            self._shutdown_init_flag = asyncio.Event()
-            self._looper_future = asyncio.ensure_future(
-                self._execute_looper(*args, **kwargs)
-            )
-            self._loop.run_until_complete(self._looper_future)
-            
-        finally:
-            self._loop.close()
-            # stop_threadsafe could be waiting on this.
-            self._shutdown_complete_flag.set()
-        
-    def stop(self):
-        ''' Stops the loop INTERNALLY.
-        '''
-        self._shutdown_init_flag.set()
-    
-    def stop_threadsafe(self):
-        ''' Stops the loop EXTERNALLY.
-        '''
-        self.stop_threadsafe_nowait()
-        self._shutdown_complete_flag.wait()
-    
-    def stop_threadsafe_nowait(self):
-        ''' Stops the loop EXTERNALLY.
-        '''
-        if not self._loop.is_closed():
-            self._loop.call_soon_threadsafe(self._shutdown_init_flag.set)
-        
-    async def catch_interrupt(self):
-        ''' Workaround for Windows not passing signals well for doing
-        interrupts.
-        
-        Standard websockets stuff.
-        
-        Deprecated? Currently unused anyways.
-        '''
-        while not self._shutdown_init_flag.is_set():
-            await asyncio.sleep(5)
-            
-    async def _execute_looper(self, *args, **kwargs):
-        ''' Called by start(), and actually manages control flow for
-        everything.
-        '''
-        await self.loop_init(*args, **kwargs)
-        
-        try:
-            while not self._shutdown_init_flag.is_set():
-                await self._step_looper()
-                
-        except CancelledError:
-            pass
+            while not self._term_flag.is_set():
+                # This yields control to the event loop to catch the cancel
+                await asyncio.sleep(0)
+                await self.loop_run()
             
         finally:
             # Prevent cancellation of the loop stop.
             await asyncio.shield(self.loop_stop())
-            await self._kill_tasks()
-            
-    async def _step_looper(self):
-        ''' Execute a single step of _execute_looper.
-        '''
-        task = asyncio.ensure_future(self.loop_run())
-        interrupt = asyncio.ensure_future(self._shutdown_init_flag.wait())
-        
-        if not self._startup_complete_flag.is_set():
-            self._loop.call_soon(self._startup_complete_flag.set)
-            
-        finished, pending = await asyncio.wait(
-            fs = [task, interrupt],
-            return_when = asyncio.FIRST_COMPLETED
-        )
-        
-        # Note that we need to check both of these, or we have a race
-        # condition where both may actually be done at the same time.
-        if task in finished:
-            # Raise any exception, ignore result, rinse, repeat
-            self._raise_if_exc(task)
-        else:
-            task.cancel()
-            
-        if interrupt in finished:
-            self._raise_if_exc(interrupt)
-        else:
-            interrupt.cancel()
             
     async def _kill_tasks(self):
         ''' Kill all remaining tasks. Call during shutdown. Will log any
