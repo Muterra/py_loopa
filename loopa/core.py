@@ -73,7 +73,7 @@ class _ThreadHelper(threading.Thread):
         self.__target = None
         
     def set_target(self, target, args, kwargs):
-        ''' Do this so that LoopManager's start() method can pass args
+        ''' Do this so that TaskManager's start() method can pass args
         and kwargs to the target.
         '''
         self.__target = target
@@ -86,14 +86,14 @@ class _ThreadHelper(threading.Thread):
         self.__target(self.__args, self.__kwargs)
 
 
-class LoopManager:
+class TaskManager:
     ''' Manages thread shutdown (etc) for a thread whose sole purpose is
     running an event loop.
     '''
     
     def __init__(self, threaded, debug=False, aengel=None, reusable_loop=False,
                  start_timeout=None, *args, **kwargs):
-        ''' Creates a LoopManager.
+        ''' Creates a TaskManager.
         
         *args and **kwargs will be passed to the threading.Thread
         constructor iff threaded=True. Otherwise, they will be ignored.
@@ -102,7 +102,7 @@ class LoopManager:
         
         if executor is None, defaults to the normal executor.
         
-        if reusable_loop=True, the LoopManager can be run more than
+        if reusable_loop=True, the TaskManager can be run more than
         once, but you're responsible for manually calling finalize() to
         clean up the loop. Except this doesn't work at the moment,
         because the internal thread is not reusable.
@@ -145,7 +145,7 @@ class LoopManager:
             except TypeError as exc:
                 raise TypeError(
                     'Improper *args and/or **kwargs for threaded ' +
-                    'LoopManager: ' + str(exc)
+                    'TaskManager: ' + str(exc)
                 ) from None
             
         else:
@@ -284,19 +284,19 @@ class LoopManager:
             
     def finalize(self):
         ''' Close the event loop and perform any other necessary
-        LoopManager cleanup. Task cleanup should be handled within the
+        TaskManager cleanup. Task cleanup should be handled within the
         task.
         '''
         self._loop.close()
         
         
-class LoopaCommanda(LoopManager):
-    ''' Sets up a LoopManager to run LoopaTroopas instead of a single
+class LoopaCommanda(TaskManager):
+    ''' Sets up a TaskManager to run LoopaTroopas instead of a single
     coro.
     '''
     
     
-class LoopaTroopa(LoopManager):
+class LoopaTroopa(TaskManager):
     ''' Basically, the Arduino of event loops. Can be invoked directly
     for a single-purpose app loop, or can be added to a LoopaCommanda to
     enable multiple simultaneous app loops.

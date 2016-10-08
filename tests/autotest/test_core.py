@@ -36,7 +36,7 @@ import queue
 import asyncio
 
 from loopa.core import _ThreadHelper
-from loopa.core import LoopManager
+from loopa.core import TaskManager
 
 
 # ###############################################
@@ -56,7 +56,7 @@ def make_target():
     return flag, q, target
     
     
-class LoopManagerTester1(LoopManager):
+class TaskManagerTester1(TaskManager):
     # Create a default
     output = None
     flag = threading.Event()
@@ -66,7 +66,7 @@ class LoopManagerTester1(LoopManager):
         self.flag.set()
     
     
-class LoopManagerTester2(LoopManager):
+class TaskManagerTester2(TaskManager):
     # Create a default
     output = None
     flag = threading.Event()
@@ -101,10 +101,10 @@ class ThreadhelperTest(unittest.TestCase):
         self.assertEqual(kwargs, kwargs2)
         
         
-class LoopManagerTest(unittest.TestCase):
+class TaskManagerTest(unittest.TestCase):
     def test_foreground(self):
         # Keep the loop open in case we do any other tests in the foreground
-        lm = LoopManagerTester1(threaded=False, reusable_loop=True)
+        lm = TaskManagerTester1(threaded=False, reusable_loop=True)
         
         args = (1, 2, 3)
         kwargs = {'foo': 'bar'}
@@ -115,7 +115,7 @@ class LoopManagerTest(unittest.TestCase):
         self.assertEqual(kwargs2, kwargs)
         
     def test_background(self):
-        lm = LoopManagerTester1(threaded=True, reusable_loop=False)
+        lm = TaskManagerTester1(threaded=True, reusable_loop=False)
         
         args = (1, 2, 3)
         kwargs = {'foo': 'bar'}
@@ -128,7 +128,7 @@ class LoopManagerTest(unittest.TestCase):
         self.assertEqual(kwargs2, kwargs)
         
     def test_background_stop(self):
-        lm = LoopManagerTester2(threaded=True, reusable_loop=False)
+        lm = TaskManagerTester2(threaded=True, reusable_loop=False)
         
         args = (1, 2, 3)
         kwargs = {'foo': 'bar'}
