@@ -33,8 +33,10 @@ Loopa: Arduino-esque event loop app framework.
 import unittest
 import threading
 import queue
+import asyncio
 
 from loopa.core import _ThreadHelper
+from loopa.core import LoopManager
 
 
 # ###############################################
@@ -52,6 +54,27 @@ def make_target():
         flag.set()
         
     return flag, q, target
+    
+    
+class LoopManagerTester1(LoopManager):
+    # Create a default
+    output = None
+    flag = threading.Event()
+    
+    async def task_run(self, *args, **kwargs):
+        self.output = (args, kwargs)
+        self.flag.set()
+    
+    
+class LoopManagerTester2(LoopManager):
+    # Create a default
+    output = None
+    flag = threading.Event()
+    
+    async def task_run(self, *args, **kwargs):
+        self.output = (args, kwargs)
+        self.flag.set()
+        await asyncio.sleep(30)
 
 
 # ###############################################
@@ -76,6 +99,54 @@ class ThreadhelperTest(unittest.TestCase):
         
         self.assertEqual(args, args2)
         self.assertEqual(kwargs, kwargs2)
+        
+        
+class LoopManagerTest(unittest.TestCase):
+    def test_foreground(self):
+        # Keep the loop open in case we do any other tests in the foreground
+        lm = LoopManagerTester1(threaded=False, reusable_loop=True)
+        
+        args = (1, 2, 3)
+        kwargs = {'foo': 'bar'}
+        
+        lm.start(*args, **kwargs)
+        args2, kwargs2 = lm.output
+        self.assertEqual(args2, args)
+        self.assertEqual(kwargs2, kwargs)
+        
+    def test_background(self):
+        lm = LoopManagerTester1(threaded=True, reusable_loop=False)
+        
+        args = (1, 2, 3)
+        kwargs = {'foo': 'bar'}
+        
+        lm.start(*args, **kwargs)
+        lm.flag.wait(timeout=30)
+        
+        args2, kwargs2 = lm.output
+        self.assertEqual(args2, args)
+        self.assertEqual(kwargs2, kwargs)
+        
+    def test_background_stop(self):
+        lm = LoopManagerTester2(threaded=True, reusable_loop=False)
+        
+        args = (1, 2, 3)
+        kwargs = {'foo': 'bar'}
+        
+        lm.start(*args, **kwargs)
+        lm.flag.wait(timeout=30)
+        
+        lm.stop_threadsafe(timeout=30)
+        
+        args2, kwargs2 = lm.output
+        self.assertEqual(args2, args)
+        self.assertEqual(kwargs2, kwargs)
+        self.assertTrue(lm._loop.is_closed())
+        
+    @classmethod
+    def tearDownClass(cls):
+        myloop = asyncio.get_event_loop()
+        myloop.close()
         
 
 if __name__ == "__main__":

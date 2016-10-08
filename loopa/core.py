@@ -92,7 +92,7 @@ class LoopManager:
     '''
     
     def __init__(self, threaded, debug=False, aengel=None, reusable_loop=False,
-                 *args, **kwargs):
+                 start_timeout=None, *args, **kwargs):
         ''' Creates a LoopManager.
         
         *args and **kwargs will be passed to the threading.Thread
@@ -111,6 +111,8 @@ class LoopManager:
             aengel.prepend_guardling(self)
             
         self._debug = bool(debug)
+        self.reusable_loop = bool(reusable_loop)
+        self._start_timeout = start_timeout
         
         # This flag will be set to initiate termination.
         self._term_flag = None
@@ -170,7 +172,7 @@ class LoopManager:
             # Update the thread's target and stuff and then run it
             self._thread.set_target(self._run, args, kwargs)
             self._thread.start()
-            self._startup_complete_flag.wait()
+            self._startup_complete_flag.wait(timeout=self._start_timeout)
         
         else:
             # This is redundant, but do it anyways in case other code changes
@@ -240,7 +242,7 @@ class LoopManager:
         ''' Stops us from within a different thread.
         '''
         self.stop_threadsafe_nowait()
-        self._shutdown_complete_flag.wait()
+        self._shutdown_complete_flag.wait(timeout=timeout)
         
     async def task_run(self):
         ''' Serves as a landing point for coop multi-inheritance.
@@ -255,6 +257,9 @@ class LoopManager:
             self._term_flag = asyncio.Event()
             aborter = asyncio.ensure_future(self._term_flag.wait())
             worker = asyncio.ensure_future(self.task_run(*args, **kwargs))
+            
+            # Wait to set the startup flag until we return control to the loop
+            self._loop.call_soon_threadsafe(self._startup_complete_flag.set)
             
             finished, pending = await asyncio.wait(
                 fs = {aborter, worker},
