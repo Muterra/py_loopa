@@ -107,18 +107,66 @@ class LoopaTroopaTester1(LoopaTroopa):
         self.runner = 0
         
     async def loop_run(self):
-        self.runner += 1
         # We want to make sure it runs exactly the correct number of times.
-        # Save exactly one change for the last one, to ensure that we don't
-        # re-enter the while loop after calling stop.
-        if self.runner >= self.limit:
+        # Therefore, always increment, even if above limit.
+        self.runner += 1
+        # Call stop exactly once, at the limit
+        if self.runner == self.limit:
             await self.stop()
+        # If we exceed it sufficiently, raise to exit.
+        elif self.runner >= (2 * self.limit):
+            raise asyncio.CancelledError()
             
     async def loop_stop(self):
         self.stopper = self.initter
         
         
 class LoopaTroopaTester2(LoopaTroopa):
+    ''' Same as above, but cancelled from a different thread.
+    '''
+    initter = None
+    runner = None
+    stopper = None
+    
+    def stop_on_dime(self):
+        try:
+            self._dime.wait()
+            self.stop_threadsafe_nowait()
+        finally:
+            self._nickel.set()
+    
+    async def loop_init(self, *args, limit=10, **kwargs):
+        self._dime = threading.Event()
+        self._nickel = threading.Event()
+        
+        self._breakerworker = threading.Thread(
+            target=self.stop_on_dime,
+            daemon=True
+        )
+        self._breakerworker.start()
+        
+        self.limit = int(limit)
+        self.initter = (args, kwargs)
+        self.runner = 0
+        
+    async def loop_run(self):
+        # We want to make sure it runs exactly the correct number of times.
+        # Therefore, always increment, even if above limit.
+        self.runner += 1
+        # Save exactly one change for the last one, to ensure that we don't
+        # re-enter the while loop after calling stop.
+        if self.runner == self.limit:
+            self._dime.set()
+            self._nickel.wait()
+        # If we exceed it sufficiently, raise to exit.
+        elif self.runner >= (2 * self.limit):
+            raise asyncio.CancelledError()
+            
+    async def loop_stop(self):
+        self.stopper = self.initter
+        
+        
+class LoopaTroopaTester3(LoopaTroopa):
     ''' Similar to above, but also tests cancellation of long-running
     loops.
     '''
@@ -226,9 +274,26 @@ class LoopaTroopaTest(unittest.TestCase):
     ''' Test the loopatroopa.
     '''
     
-    def test_simple(self):
+    def test_self_stop(self):
         # Keep the loop open in case we do any other tests in the foreground
         lm = LoopaTroopaTester1(threaded=False, reusable_loop=True, debug=True)
+        
+        limit = 10
+        args = (1, 2, 3)
+        kwargs = {'foo': 'bar'}
+        
+        lm.start(limit=limit, *args, **kwargs)
+        args2, kwargs2 = lm.initter
+        args3, kwargs3 = lm.stopper
+        self.assertEqual(args2, args)
+        self.assertEqual(args3, args)
+        self.assertEqual(kwargs2, kwargs)
+        self.assertEqual(kwargs3, kwargs)
+        self.assertEqual(lm.runner, limit)
+    
+    def test_threaded_stop(self):
+        # Keep the loop open in case we do any other tests in the foreground
+        lm = LoopaTroopaTester2(threaded=False, reusable_loop=True, debug=True)
         
         limit = 10
         args = (1, 2, 3)

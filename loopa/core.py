@@ -119,6 +119,7 @@ class TaskManager:
         
         # This flag will be set to initiate termination.
         self._term_flag = None
+        self._task = None
         
         # These flags control blocking when threaded
         self._startup_complete_flag = threading.Event()
@@ -219,7 +220,7 @@ class TaskManager:
             self._startup_complete_flag.clear()
             self._shutdown_complete_flag.set()
         
-    async def stop(self):
+    def stop(self):
         ''' ONLY TO BE CALLED FROM WITHIN OUR RUNNING TASKS! Do NOT call
         this wrapped in a call_coroutine_threadsafe or
         run_coroutine_loopsafe; instead use the direct methods.
@@ -230,16 +231,13 @@ class TaskManager:
         if not self._startup_complete_flag.is_set():
             raise RuntimeError('Cannot stop before startup is complete.')
             
-        self._term_flag.set()
+        self._task.cancel()
         
     def stop_threadsafe_nowait(self):
         ''' Stops us from within a different thread without waiting for
         closure.
         '''
-        complete_coroutine_threadsafe(
-            coro = self.stop(),
-            loop = self._loop
-        )
+        self._loop.call_soon_threadsafe(self.stop)
         
     def stop_threadsafe(self, timeout=None):
         ''' Stops us from within a different thread.
@@ -258,33 +256,33 @@ class TaskManager:
         '''
         try:
             self._term_flag = asyncio.Event()
-            aborter = asyncio.ensure_future(self._term_flag.wait())
-            worker = asyncio.ensure_future(self.task_run(*args, **kwargs))
+            self._task = asyncio.ensure_future(self.task_run(*args, **kwargs))
             
             # Don't wait to set the startup flag until we return control to the
             # loop, because we already "started" the tasks.
             self._startup_complete_flag.set()
             
-            finished, pending = await asyncio.wait(
-                fs = {aborter, worker},
-                return_when = asyncio.FIRST_COMPLETED
-            )
-            
-            # Unpack both sets, which will be of length 1.
-            pending, = pending
-            finished, = finished
-            
-            # Cancel the remaining task (doesn't matter which it is).
-            pending.cancel()
-            
             # Raise the task's exception or return its result. More likely
             # than not, this will only happen if the worker finishes first.
             # asyncio handles raising the exception for us here.
-            return finished.result()
+            try:
+                result = await asyncio.wait_for(self._task, timeout=None)
+            
+            except asyncio.CancelledError:
+                result = None
+                
+            return result
             
         # Reset the termination flag on the way out, just in case.
         finally:
+            self._task = None
             self._term_flag = None
+            
+    def _abort(self):
+        ''' Performs any needed cancellation propagation (etc).
+        Must only be called from within the event loop.
+        '''
+        pass
             
     def finalize(self):
         ''' Close the event loop and perform any other necessary
@@ -333,8 +331,12 @@ class LoopaTroopa(TaskManager):
         try:
             await self.loop_init(*args, **kwargs)
             
-            while not self._term_flag.is_set():
-                # This yields control to the event loop to catch the cancel
+            # while not self._term_flag.is_set():
+            while True:
+                # We need to guarantee that we give control back to the event
+                # loop at least once (even if running all synchronous code) to
+                # catch any cancellations.
+                # TODO: is there a better way than this?
                 await asyncio.sleep(0)
                 await self.loop_run()
             
