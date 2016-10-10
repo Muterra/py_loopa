@@ -94,8 +94,8 @@ class TaskManager:
     running an event loop.
     '''
     
-    def __init__(self, threaded, debug=False, aengel=None, reusable_loop=False,
-                 start_timeout=None, *args, **kwargs):
+    def __init__(self, threaded=False, debug=False, aengel=None,
+                 reusable_loop=False, start_timeout=None, *args, **kwargs):
         ''' Creates a TaskManager.
         
         *args and **kwargs will be passed to the threading.Thread
@@ -290,15 +290,9 @@ class TaskManager:
         task.
         '''
         self._loop.close()
-        
-        
-class LoopaCommanda(TaskManager):
-    ''' Sets up a TaskManager to run LoopaTroopas instead of a single
-    coro.
-    '''
     
     
-class LoopaTroopa(TaskManager):
+class TaskLooper(TaskManager):
     ''' Basically, the Arduino of event loops. Can be invoked directly
     for a single-purpose app loop, or can be added to a LoopaCommanda to
     enable multiple simultaneous app loops.
@@ -343,6 +337,120 @@ class LoopaTroopa(TaskManager):
         finally:
             # Prevent cancellation of the loop stop.
             await asyncio.shield(self.loop_stop())
+        
+        
+class TaskCommander(TaskManager):
+    ''' Sets up a TaskManager to run tasks instead of just a single
+    coro.
+    '''
+    
+    def __init__(self, *args, **kwargs):
+        ''' In addition to super(), we also need to add in some variable
+        inits.
+        '''
+        super().__init__(*args, **kwargs)
+        
+        # Lookup for troopa -> future
+        self._futures_by_troopa = {}
+        # Lookup for future -> troopa
+        self._troopas_by_future = {}
+        # Lookup for troopa -> start args, kwargs
+        self._to_start = {}
+        # Lookup for troopa -> result
+        self._results = {}
+        
+    def register_task(self, task, *args, **kwargs):
+        ''' Registers a task to start when the LoopaCommanda is run.
+        '''
+        if not isinstance(task, TaskManager):
+            raise TypeError('Task must be a TaskManager instance.')
+        
+        self._to_start[task] = args, kwargs
+        
+    def deregister_task(self, task):
+        ''' Discards an existing task. Raises ValueError if the task is
+        unregistered.
+        '''
+        try:
+            del self._to_start[task]
+        except KeyError:
+            raise ValueError(
+                'Task ' + repr(task) + ' is not currently registered.'
+            )
+        
+    async def task_run(self):
+        ''' Starts all of the troopas' tasks.
+        '''
+        try:
+            tasks_available = set()
+            for troopa, (args, kwargs) in self._to_start.items():
+                task = asyncio.ensure_future(troopa.task_run(*args, **kwargs))
+                self._futures_by_troopa[troopa] = task
+                self._troopas_by_future[task] = troopa
+                tasks_available.add(task)
+
+            # Wait for all tasks to complete (unless cancelled), but process
+            # any issues as they happen.
+            finished = None
+                
+            # Wait until the first successful task completion
+            while tasks_available:
+                finished, pending = await asyncio.wait(
+                    fs = tasks_available,
+                    return_when = asyncio.FIRST_COMPLETED
+                )
+            
+                # It IS possible to return more than one complete task, even
+                # though we've used FIRST_COMPLETED
+                for finished_task in finished:
+                    tasks_available.discard(finished_task)
+                    self._handle_completed(finished_task)
+        
+        # No matter what happens, cancel all tasks at exit.
+        finally:
+            try:
+                for task in self._troopas_by_future:
+                    task.cancel()
+                    
+                # And wait for them all to complete (note that this will delay
+                # shutdown!)
+                await asyncio.wait(
+                    fs = self._troopas_by_future,
+                    return_when = asyncio.ALL_COMPLETED
+                )
+            
+            # Reset everything so it's possible to run again.
+            finally:
+                results = self._results
+                self._results = {}
+                self._futures_by_troopa = {}
+                self._troopas_by_future = {}
+
+        # This may or may not be useful.
+        return results
+                
+    def _handle_completed(self, task):
+        ''' Handles a TaskLooper that completes without cancellation.
+        '''
+        try:
+            troopa = self._troopas_by_future[task]
+            exc = task.exception()
+            
+            # If there's been an exception, continue waiting for the rest.
+            if exc is not None:
+                logger.error(
+                    'Exception while running ' + repr(troopa) + 'w/ ' +
+                    'traceback:\n' + ''.join(traceback.format_exception(
+                        type(exc), exc, exc.__traceback__)
+                    )
+                )
+            
+            else:
+                self._results[troopa] = task.result()
+        
+        # Don't really do anything with these?
+        except asyncio.CancelledError:
+            logger.info('Task cancelled: ' + repr(troopa))
             
     async def _kill_tasks(self):
         ''' Kill all remaining tasks. Call during shutdown. Will log any
@@ -352,7 +460,7 @@ class LoopaTroopa(TaskManager):
         
         for task in all_tasks:
             if task is not self._looper_future:
-                logging.info('Task remains while closing loop: ' + repr(task))
+                logger.info('Task remains while closing loop: ' + repr(task))
                 task.cancel()
         
         if len(all_tasks) > 0:

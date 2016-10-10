@@ -35,10 +35,12 @@ import threading
 import queue
 import asyncio
 import atexit
+import time
 
 from loopa.core import _ThreadHelper
 from loopa.core import TaskManager
-from loopa.core import LoopaTroopa
+from loopa.core import TaskLooper
+from loopa.core import TaskCommander
 
 
 # ###############################################
@@ -73,11 +75,11 @@ def make_target():
     
 class TaskManagerTester1(TaskManager):
     # Create a default
-    output = None
+    reoutput = None
     flag = threading.Event()
     
     async def task_run(self, *args, **kwargs):
-        self.output = (args, kwargs)
+        self.reoutput = (args, kwargs)
         self.flag.set()
     
     
@@ -96,7 +98,7 @@ class TaskManagerTester2(TaskManager):
             self.flag2.set()
         
         
-class LoopaTroopaTester1(LoopaTroopa):
+class TaskLooperTester1(TaskLooper):
     initter = None
     runner = None
     stopper = None
@@ -121,7 +123,7 @@ class LoopaTroopaTester1(LoopaTroopa):
         self.stopper = self.initter
         
         
-class LoopaTroopaTester2(LoopaTroopa):
+class TaskLooperTester2(TaskLooper):
     ''' Same as above, but cancelled from a different thread.
     '''
     initter = None
@@ -166,33 +168,9 @@ class LoopaTroopaTester2(LoopaTroopa):
         self.stopper = self.initter
         
         
-class LoopaTroopaTester3(LoopaTroopa):
-    ''' Similar to above, but also tests cancellation of long-running
-    loops.
+class TaskCommanderTester1(TaskLooper):
+    ''' TaskLooper for testing the TaskCommander.
     '''
-    initter = None
-    runner = None
-    stopper = None
-    
-    async def loop_init(self, *args, limit=10, **kwargs):
-        self.limit = int(limit)
-        self.initter = (args, kwargs)
-        self.runner = 0
-        
-    async def loop_run(self):
-        # We want to make sure it runs exactly the correct number of times.
-        # Save exactly one change for the last one, to ensure that we don't
-        # re-enter the while loop after calling stop.
-        if self.runner < (self.limit - 1):
-            self.runner += 1
-            print(self.runner)
-        else:
-            self.runner += 1
-            print('STOPPING!')
-            await self.stop()
-            
-    async def loop_stop(self):
-        self.stopper = self.initter
 
 
 # ###############################################
@@ -228,7 +206,7 @@ class TaskManagerTest(unittest.TestCase):
         kwargs = {'foo': 'bar'}
         
         lm.start(*args, **kwargs)
-        args2, kwargs2 = lm.output
+        args2, kwargs2 = lm.reoutput
         self.assertEqual(args2, args)
         self.assertEqual(kwargs2, kwargs)
         
@@ -240,8 +218,10 @@ class TaskManagerTest(unittest.TestCase):
         
         lm.start(*args, **kwargs)
         lm.flag.wait(timeout=30)
+        # Something is seriously weird here but I've no idea what
+        time.sleep(.01)
         
-        args2, kwargs2 = lm.output
+        args2, kwargs2 = lm.reoutput
         self.assertEqual(args2, args)
         self.assertEqual(kwargs2, kwargs)
         
@@ -270,13 +250,13 @@ class TaskManagerTest(unittest.TestCase):
         self.assertTrue(lm._loop.is_closed())
         
         
-class LoopaTroopaTest(unittest.TestCase):
-    ''' Test the loopatroopa.
+class TaskLooperTest(unittest.TestCase):
+    ''' Test the TaskLooper.
     '''
     
     def test_self_stop(self):
         # Keep the loop open in case we do any other tests in the foreground
-        lm = LoopaTroopaTester1(threaded=False, reusable_loop=True, debug=True)
+        lm = TaskLooperTester1(threaded=False, reusable_loop=True, debug=True)
         
         limit = 10
         args = (1, 2, 3)
@@ -293,7 +273,7 @@ class LoopaTroopaTest(unittest.TestCase):
     
     def test_threaded_stop(self):
         # Keep the loop open in case we do any other tests in the foreground
-        lm = LoopaTroopaTester2(threaded=False, reusable_loop=True, debug=True)
+        lm = TaskLooperTester2(threaded=False, reusable_loop=True, debug=True)
         
         limit = 10
         args = (1, 2, 3)
@@ -307,6 +287,69 @@ class LoopaTroopaTest(unittest.TestCase):
         self.assertEqual(kwargs2, kwargs)
         self.assertEqual(kwargs3, kwargs)
         self.assertEqual(lm.runner, limit)
+        
+        
+class TaskCommanderTest(unittest.TestCase):
+    def test_simple_nostop(self):
+        tm1 = TaskManagerTester1()
+        tm2 = TaskManagerTester1()
+        
+        com = TaskCommander(reusable_loop=True, debug=True)
+        
+        args = (1, 2, 3)
+        kwargs = {'foo': 'bar'}
+        
+        com.register_task(tm1, *args, **kwargs)
+        com.register_task(tm2, *args, **kwargs)
+        
+        com.start()
+        tm1.flag.wait(timeout=30)
+        tm2.flag.wait(timeout=30)
+        
+        args2, kwargs2 = tm1.reoutput
+        self.assertEqual(args2, args)
+        self.assertEqual(kwargs2, kwargs)
+        
+        args3, kwargs3 = tm2.reoutput
+        self.assertEqual(args3, args)
+        self.assertEqual(kwargs3, kwargs)
+        
+        # Don't call stop, because we want to make sure the loop closes itself
+        # appropriately. Instead, wait for the shutdown flag.
+        com._shutdown_complete_flag.wait(timeout=30)
+        
+    def test_simple_stop(self):
+        tm1 = TaskManagerTester2()
+        tm2 = TaskManagerTester2()
+        
+        com = TaskCommander(threaded=True, reusable_loop=False, debug=True)
+        
+        args = (1, 2, 3)
+        kwargs = {'foo': 'bar'}
+        
+        com.register_task(tm1, *args, **kwargs)
+        com.register_task(tm2, *args, **kwargs)
+        
+        com.start()
+        tm1.flag1.wait(timeout=30)
+        tm2.flag1.wait(timeout=30)
+        
+        # Ensure it stops before the end of the sleep call
+        com.stop_threadsafe(timeout=5)
+        tm1.flag2.wait(timeout=5)
+        tm2.flag2.wait(timeout=5)
+        
+        args2, kwargs2 = tm1.output
+        self.assertEqual(args2, args)
+        self.assertEqual(kwargs2, kwargs)
+        
+        args3, kwargs3 = tm2.output
+        self.assertEqual(args3, args)
+        self.assertEqual(kwargs3, kwargs)
+        
+        # Don't call stop, because we want to make sure the loop closes itself
+        # appropriately. Instead, wait for the shutdown flag.
+        com._shutdown_complete_flag.wait(timeout=30)
         
 
 if __name__ == "__main__":
