@@ -359,6 +359,40 @@ class TaskCommanderTest(unittest.TestCase):
         # appropriately. Instead, wait for the shutdown flag.
         com._shutdown_complete_flag.wait(timeout=30)
         
+    def test_looper_nostop(self):
+        tm1 = TaskLooperTester1()
+        tm2 = TaskLooperTester1()
+        
+        com = TaskCommander(reusable_loop=True, debug=True)
+        
+        limit = 10
+        args = (1, 2, 3)
+        kwargs = {'foo': 'bar'}
+        
+        com.register_task(tm1, *args, limit=limit, **kwargs)
+        com.register_task(tm2, *args, limit=limit, **kwargs)
+        com.start()
+        
+        args2, kwargs2 = tm1.initter
+        args3, kwargs3 = tm1.stopper
+        self.assertEqual(args2, args)
+        self.assertEqual(args3, args)
+        self.assertEqual(kwargs2, kwargs)
+        self.assertEqual(kwargs3, kwargs)
+        self.assertEqual(tm1.runner, limit)
+        
+        args2, kwargs2 = tm2.initter
+        args3, kwargs3 = tm2.stopper
+        self.assertEqual(args2, args)
+        self.assertEqual(args3, args)
+        self.assertEqual(kwargs2, kwargs)
+        self.assertEqual(kwargs3, kwargs)
+        self.assertEqual(tm2.runner, limit)
+        
+        # Don't call stop, because we want to make sure the loop closes itself
+        # appropriately. Instead, wait for the shutdown flag.
+        com._shutdown_complete_flag.wait(timeout=30)
+        
 
 if __name__ == "__main__":
     unittest.main()

@@ -117,8 +117,7 @@ class ManagedTask:
         self.reusable_loop = bool(reusable_loop)
         self._start_timeout = start_timeout
         
-        # This flag will be set to initiate termination.
-        self._term_flag = None
+        # This is our actual asyncio.Task
         self._task = None
         
         # These flags control blocking when threaded
@@ -255,7 +254,6 @@ class ManagedTask:
         ''' Actually executes the task at hand.
         '''
         try:
-            self._term_flag = asyncio.Event()
             self._task = asyncio.ensure_future(self.task_run(*args, **kwargs))
             
             # Don't wait to set the startup flag until we return control to the
@@ -276,7 +274,6 @@ class ManagedTask:
         # Reset the termination flag on the way out, just in case.
         finally:
             self._task = None
-            self._term_flag = None
             
     def _abort(self):
         ''' Performs any needed cancellation propagation (etc).
@@ -325,7 +322,6 @@ class TaskLooper(ManagedTask):
         try:
             await self.loop_init(*args, **kwargs)
             
-            # while not self._term_flag.is_set():
             while True:
                 # We need to guarantee that we give control back to the event
                 # loop at least once (even if running all synchronous code) to
@@ -379,12 +375,14 @@ class TaskCommander(ManagedTask):
             )
         
     async def task_run(self):
-        ''' Starts all of the troopas' tasks.
+        ''' Runs all of the TaskCommander's tasks.
         '''
         try:
             tasks_available = set()
             for troopa, (args, kwargs) in self._to_start.items():
-                task = asyncio.ensure_future(troopa.task_run(*args, **kwargs))
+                task = asyncio.ensure_future(
+                    troopa._execute_task(args, kwargs)
+                )
                 self._futures_by_troopa[troopa] = task
                 self._troopas_by_future[task] = troopa
                 tasks_available.add(task)
