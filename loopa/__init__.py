@@ -44,14 +44,9 @@ logging.getLogger(__name__).addHandler(NullHandler())
 
 # Control * imports.
 __all__ = [
-    # 'Daemonizer',
-    # 'daemonize',
-    # 'SignalHandler1',
-    # 'IGNORE_SIGNAL',
-    # 'send',
-    # 'SIGINT',
-    # 'SIGTERM',
-    # 'SIGABRT',
+    'ManagedTask',
+    'TaskLooper',
+    'TaskCommander',
 ]
 
 
@@ -62,6 +57,9 @@ __all__ = [
 # Submodules
 from . import exceptions
 from . import utils
+from . import core
+
+from .core import *
 
 # from ._signals_common import IGNORE_SIGNAL
 # from ._signals_common import send

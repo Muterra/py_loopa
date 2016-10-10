@@ -50,6 +50,10 @@ import inspect
 
 # Control * imports.
 __all__ = [
+    'ManagedTask',
+    'TaskLooper',
+    'TaskCommander',
+    'Aengel'
 ]
 
 
