@@ -35,7 +35,6 @@ import threading
 import queue
 import asyncio
 import atexit
-import time
 
 from loopa.core import _ThreadHelper
 from loopa.core import ManagedTask
@@ -76,7 +75,10 @@ def make_target():
 class ManagedTaskTester1(ManagedTask):
     # Create a default
     reoutput = None
-    flag = threading.Event()
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.flag = threading.Event()
     
     async def task_run(self, *args, **kwargs):
         self.reoutput = (args, kwargs)
@@ -86,8 +88,11 @@ class ManagedTaskTester1(ManagedTask):
 class ManagedTaskTester2(ManagedTask):
     # Create a default
     output = None
-    flag1 = threading.Event()
-    flag2 = threading.Event()
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.flag1 = threading.Event()
+        self.flag2 = threading.Event()
     
     async def task_run(self, *args, **kwargs):
         try:
@@ -130,6 +135,11 @@ class TaskLooperTester2(TaskLooper):
     runner = None
     stopper = None
     
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._dime = threading.Event()
+        self._nickel = threading.Event()
+    
     def stop_on_dime(self):
         try:
             self._dime.wait()
@@ -138,9 +148,6 @@ class TaskLooperTester2(TaskLooper):
             self._nickel.set()
     
     async def loop_init(self, *args, limit=10, **kwargs):
-        self._dime = threading.Event()
-        self._nickel = threading.Event()
-        
         self._breakerworker = threading.Thread(
             target=self.stop_on_dime,
             daemon=True
@@ -218,8 +225,6 @@ class ManagedTaskTest(unittest.TestCase):
         
         lm.start(*args, **kwargs)
         lm.flag.wait(timeout=30)
-        # Something is seriously weird here but I've no idea what
-        time.sleep(.01)
         
         args2, kwargs2 = lm.reoutput
         self.assertEqual(args2, args)
@@ -273,13 +278,16 @@ class TaskLooperTest(unittest.TestCase):
     
     def test_threaded_stop(self):
         # Keep the loop open in case we do any other tests in the foreground
-        lm = TaskLooperTester2(threaded=False, reusable_loop=True, debug=True)
+        lm = TaskLooperTester2(threaded=True, reusable_loop=False, debug=True)
         
         limit = 10
         args = (1, 2, 3)
         kwargs = {'foo': 'bar'}
         
         lm.start(limit=limit, *args, **kwargs)
+        lm.stop_on_dime()
+        lm._shutdown_complete_flag.wait(timeout=10)
+        
         args2, kwargs2 = lm.initter
         args3, kwargs3 = lm.stopper
         self.assertEqual(args2, args)
