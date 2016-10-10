@@ -409,6 +409,9 @@ class TaskCommander(ManagedTask):
             try:
                 for task in self._troopas_by_future:
                     task.cancel()
+                    # Also clear all startup flags to ready for reuse.
+                    troopa = self._troopas_by_future[task]
+                    troopa._startup_complete_flag.clear()
                     
                 # And wait for them all to complete (note that this will delay
                 # shutdown!)
@@ -431,7 +434,10 @@ class TaskCommander(ManagedTask):
         ''' Handles a TaskLooper that completes without cancellation.
         '''
         try:
+            # Reset the task startup primitive
             troopa = self._troopas_by_future[task]
+            troopa._startup_complete_flag.clear()
+            
             exc = task.exception()
             
             # If there's been an exception, continue waiting for the rest.
