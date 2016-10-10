@@ -40,7 +40,8 @@ import collections
 import inspect
 
 # In-package deps
-from .utils import complete_coroutine_threadsafe
+# from .utils import complete_coroutine_threadsafe
+# from .exceptions import LoopaException
 
 
 # ###############################################
@@ -346,13 +347,13 @@ class TaskCommander(ManagedTask):
         '''
         super().__init__(*args, **kwargs)
         
-        # Lookup for troopa -> future
-        self._futures_by_troopa = {}
-        # Lookup for future -> troopa
-        self._troopas_by_future = {}
-        # Lookup for troopa -> start args, kwargs
+        # Lookup for task -> future
+        self._futures_by_task = {}
+        # Lookup for future -> task
+        self._tasks_by_future = {}
+        # Lookup for task -> start args, kwargs
         self._to_start = {}
-        # Lookup for troopa -> result
+        # Lookup for task -> result
         self._results = {}
         
     def register_task(self, task, *args, **kwargs):
@@ -379,12 +380,12 @@ class TaskCommander(ManagedTask):
         '''
         try:
             tasks_available = set()
-            for troopa, (args, kwargs) in self._to_start.items():
+            for taskman, (args, kwargs) in self._to_start.items():
                 task = asyncio.ensure_future(
-                    troopa._execute_task(args, kwargs)
+                    taskman._execute_task(args, kwargs)
                 )
-                self._futures_by_troopa[troopa] = task
-                self._troopas_by_future[task] = troopa
+                self._futures_by_task[taskman] = task
+                self._tasks_by_future[task] = taskman
                 tasks_available.add(task)
 
             # Wait for all tasks to complete (unless cancelled), but process
@@ -407,16 +408,16 @@ class TaskCommander(ManagedTask):
         # No matter what happens, cancel all tasks at exit.
         finally:
             try:
-                for task in self._troopas_by_future:
+                for task in self._tasks_by_future:
                     task.cancel()
                     # Also clear all startup flags to ready for reuse.
-                    troopa = self._troopas_by_future[task]
-                    troopa._startup_complete_flag.clear()
+                    taskman = self._tasks_by_future[task]
+                    taskman._startup_complete_flag.clear()
                     
                 # And wait for them all to complete (note that this will delay
                 # shutdown!)
                 await asyncio.wait(
-                    fs = self._troopas_by_future,
+                    fs = self._tasks_by_future,
                     return_when = asyncio.ALL_COMPLETED
                 )
             
@@ -424,8 +425,8 @@ class TaskCommander(ManagedTask):
             finally:
                 results = self._results
                 self._results = {}
-                self._futures_by_troopa = {}
-                self._troopas_by_future = {}
+                self._futures_by_task = {}
+                self._tasks_by_future = {}
 
         # This may or may not be useful.
         return results
@@ -435,26 +436,26 @@ class TaskCommander(ManagedTask):
         '''
         try:
             # Reset the task startup primitive
-            troopa = self._troopas_by_future[task]
-            troopa._startup_complete_flag.clear()
+            taskman = self._tasks_by_future[task]
+            taskman._startup_complete_flag.clear()
             
             exc = task.exception()
             
             # If there's been an exception, continue waiting for the rest.
             if exc is not None:
                 logger.error(
-                    'Exception while running ' + repr(troopa) + 'w/ ' +
+                    'Exception while running ' + repr(taskman) + 'w/ ' +
                     'traceback:\n' + ''.join(traceback.format_exception(
                         type(exc), exc, exc.__traceback__)
                     )
                 )
             
             else:
-                self._results[troopa] = task.result()
+                self._results[taskman] = task.result()
         
         # Don't really do anything with these?
         except asyncio.CancelledError:
-            logger.info('Task cancelled: ' + repr(troopa))
+            logger.info('Task cancelled: ' + repr(taskman))
             
     async def _kill_tasks(self):
         ''' Kill all remaining tasks. Call during shutdown. Will log any
