@@ -76,7 +76,7 @@ class _ThreadHelper(threading.Thread):
         self.__target = None
         
     def set_target(self, target, args, kwargs):
-        ''' Do this so that TaskManager's start() method can pass args
+        ''' Do this so that ManagedTask's start() method can pass args
         and kwargs to the target.
         '''
         self.__target = target
@@ -89,14 +89,14 @@ class _ThreadHelper(threading.Thread):
         self.__target(self.__args, self.__kwargs)
 
 
-class TaskManager:
+class ManagedTask:
     ''' Manages thread shutdown (etc) for a thread whose sole purpose is
     running an event loop.
     '''
     
     def __init__(self, threaded=False, debug=False, aengel=None,
                  reusable_loop=False, start_timeout=None, *args, **kwargs):
-        ''' Creates a TaskManager.
+        ''' Creates a ManagedTask.
         
         *args and **kwargs will be passed to the threading.Thread
         constructor iff threaded=True. Otherwise, they will be ignored.
@@ -105,7 +105,7 @@ class TaskManager:
         
         if executor is None, defaults to the normal executor.
         
-        if reusable_loop=True, the TaskManager can be run more than
+        if reusable_loop=True, the ManagedTask can be run more than
         once, but you're responsible for manually calling finalize() to
         clean up the loop. Except this doesn't work at the moment,
         because the internal thread is not reusable.
@@ -149,7 +149,7 @@ class TaskManager:
             except TypeError as exc:
                 raise TypeError(
                     'Improper *args and/or **kwargs for threaded ' +
-                    'TaskManager: ' + str(exc)
+                    'ManagedTask: ' + str(exc)
                 ) from None
             
         else:
@@ -286,13 +286,13 @@ class TaskManager:
             
     def finalize(self):
         ''' Close the event loop and perform any other necessary
-        TaskManager cleanup. Task cleanup should be handled within the
+        ManagedTask cleanup. Task cleanup should be handled within the
         task.
         '''
         self._loop.close()
     
     
-class TaskLooper(TaskManager):
+class TaskLooper(ManagedTask):
     ''' Basically, the Arduino of event loops. Can be invoked directly
     for a single-purpose app loop, or can be added to a LoopaCommanda to
     enable multiple simultaneous app loops.
@@ -339,8 +339,8 @@ class TaskLooper(TaskManager):
             await asyncio.shield(self.loop_stop())
         
         
-class TaskCommander(TaskManager):
-    ''' Sets up a TaskManager to run tasks instead of just a single
+class TaskCommander(ManagedTask):
+    ''' Sets up a ManagedTask to run tasks instead of just a single
     coro.
     '''
     
@@ -362,8 +362,8 @@ class TaskCommander(TaskManager):
     def register_task(self, task, *args, **kwargs):
         ''' Registers a task to start when the LoopaCommanda is run.
         '''
-        if not isinstance(task, TaskManager):
-            raise TypeError('Task must be a TaskManager instance.')
+        if not isinstance(task, ManagedTask):
+            raise TypeError('Task must be a ManagedTask instance.')
         
         self._to_start[task] = args, kwargs
         

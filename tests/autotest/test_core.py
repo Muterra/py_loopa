@@ -38,7 +38,7 @@ import atexit
 import time
 
 from loopa.core import _ThreadHelper
-from loopa.core import TaskManager
+from loopa.core import ManagedTask
 from loopa.core import TaskLooper
 from loopa.core import TaskCommander
 
@@ -73,7 +73,7 @@ def make_target():
     return flag, q, target
     
     
-class TaskManagerTester1(TaskManager):
+class ManagedTaskTester1(ManagedTask):
     # Create a default
     reoutput = None
     flag = threading.Event()
@@ -83,7 +83,7 @@ class TaskManagerTester1(TaskManager):
         self.flag.set()
     
     
-class TaskManagerTester2(TaskManager):
+class ManagedTaskTester2(ManagedTask):
     # Create a default
     output = None
     flag1 = threading.Event()
@@ -197,10 +197,10 @@ class ThreadhelperTest(unittest.TestCase):
         self.assertEqual(kwargs, kwargs2)
         
         
-class TaskManagerTest(unittest.TestCase):
+class ManagedTaskTest(unittest.TestCase):
     def test_foreground(self):
         # Keep the loop open in case we do any other tests in the foreground
-        lm = TaskManagerTester1(threaded=False, reusable_loop=True, debug=True)
+        lm = ManagedTaskTester1(threaded=False, reusable_loop=True, debug=True)
         
         args = (1, 2, 3)
         kwargs = {'foo': 'bar'}
@@ -211,7 +211,7 @@ class TaskManagerTest(unittest.TestCase):
         self.assertEqual(kwargs2, kwargs)
         
     def test_background(self):
-        lm = TaskManagerTester1(threaded=True, reusable_loop=False, debug=True)
+        lm = ManagedTaskTester1(threaded=True, reusable_loop=False, debug=True)
         
         args = (1, 2, 3)
         kwargs = {'foo': 'bar'}
@@ -232,7 +232,7 @@ class TaskManagerTest(unittest.TestCase):
         self.assertTrue(lm._loop.is_closed())
         
     def test_background_stop(self):
-        lm = TaskManagerTester2(threaded=True, reusable_loop=False, debug=True)
+        lm = ManagedTaskTester2(threaded=True, reusable_loop=False, debug=True)
         
         args = (1, 2, 3)
         kwargs = {'foo': 'bar'}
@@ -291,8 +291,8 @@ class TaskLooperTest(unittest.TestCase):
         
 class TaskCommanderTest(unittest.TestCase):
     def test_simple_nostop(self):
-        tm1 = TaskManagerTester1()
-        tm2 = TaskManagerTester1()
+        tm1 = ManagedTaskTester1()
+        tm2 = ManagedTaskTester1()
         
         com = TaskCommander(reusable_loop=True, debug=True)
         
@@ -319,8 +319,8 @@ class TaskCommanderTest(unittest.TestCase):
         com._shutdown_complete_flag.wait(timeout=30)
         
     def test_simple_stop(self):
-        tm1 = TaskManagerTester2()
-        tm2 = TaskManagerTester2()
+        tm1 = ManagedTaskTester2()
+        tm2 = ManagedTaskTester2()
         
         com = TaskCommander(threaded=True, reusable_loop=False, debug=True)
         
