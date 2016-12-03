@@ -40,7 +40,7 @@ import collections
 import inspect
 
 # In-package deps
-# from .utils import complete_coroutine_threadsafe
+# from .utils import await_coroutine_threadsafe
 # from .exceptions import LoopaException
 
 
@@ -53,7 +53,8 @@ __all__ = [
     'ManagedTask',
     'TaskLooper',
     'TaskCommander',
-    'Aengel'
+    'Aengel',
+    'NoopLoop'
 ]
 
 
@@ -61,8 +62,14 @@ logger = logging.getLogger(__name__)
 
 
 # ###############################################
-# Lib
+# Etc
 # ###############################################
+            
+
+_TaskDef = collections.namedtuple(
+    typename = '_TaskDef',
+    field_names = ('mgmt', 'args', 'kwargs'),
+)
 
 
 class _ThreadHelper(threading.Thread):
@@ -94,13 +101,19 @@ class _ThreadHelper(threading.Thread):
         self.__target(self.__args, self.__kwargs)
 
 
+# ###############################################
+# Lib
+# ###############################################
+
+
 class ManagedTask:
     ''' Manages thread shutdown (etc) for a thread whose sole purpose is
     running an event loop.
     '''
     
-    def __init__(self, threaded=False, debug=False, aengel=None,
-                 reusable_loop=False, start_timeout=None, *args, **kwargs):
+    def __init__(self, *args, threaded=False, debug=False, aengel=None,
+                 reusable_loop=False, start_timeout=None, thread_args=tuple(),
+                 thread_kwargs={}, **kwargs):
         ''' Creates a ManagedTask.
         
         *args and **kwargs will be passed to the threading.Thread
@@ -115,6 +128,8 @@ class ManagedTask:
         clean up the loop. Except this doesn't work at the moment,
         because the internal thread is not reusable.
         '''
+        super().__init__(*args, **kwargs)
+            
         if aengel is not None:
             aengel.prepend_guardling(self)
             
@@ -131,23 +146,23 @@ class ManagedTask:
         
         # And deal with threading
         if threaded:
-            self._threaded = True
+            self.threaded = True
             self._loop = asyncio.new_event_loop()
             
             # Save args and kwargs for the thread creation
-            self._thread_args = args
-            self._thread_kwargs = kwargs
+            self._thread_args = thread_args
+            self._thread_kwargs = thread_kwargs
             
             # Do this here so we can fail fast, instead of when calling start
             # Set up a thread for the loop
             try:
                 _ThreadHelper.ARGSIG.bind(
+                    *thread_args,
                     daemon = False,
                     target = None,
                     args = tuple(),
                     kwargs = {},
-                    *args,
-                    **kwargs
+                    **thread_kwargs
                 )
             
             except TypeError as exc:
@@ -157,7 +172,7 @@ class ManagedTask:
                 ) from None
             
         else:
-            self._threaded = False
+            self.threaded = False
             self._loop = asyncio.get_event_loop()
             # Declare the thread as nothing.
             self._thread = None
@@ -167,7 +182,7 @@ class ManagedTask:
         as appropriate. Passes *args and **kwargs along to the task_run
         method.
         '''
-        if self._threaded:
+        if self.threaded:
             # Delay thread generation until starting.
             self._thread = _ThreadHelper(
                 daemon = False,
@@ -199,7 +214,7 @@ class ManagedTask:
             try:
                 # If we're running in a thread, we MUST explicitly set up the
                 # event loop
-                if self._threaded:
+                if self.threaded:
                     asyncio.set_event_loop(self._loop)
                 
                 # Start the task.
@@ -241,7 +256,10 @@ class ManagedTask:
         ''' Stops us from within a different thread without waiting for
         closure.
         '''
-        self._loop.call_soon_threadsafe(self.stop)
+        if self._loop.is_running():
+            self._loop.call_soon_threadsafe(self.stop)
+        else:
+            self._shutdown_complete_flag.set()
         
     def stop_threadsafe(self, timeout=None):
         ''' Stops us from within a different thread.
@@ -259,11 +277,15 @@ class ManagedTask:
         ''' Actually executes the task at hand.
         '''
         try:
-            self._task = asyncio.ensure_future(self.task_run(*args, **kwargs))
+            try:
+                self._task = asyncio.ensure_future(
+                    self.task_run(*args, **kwargs)
+                )
             
-            # Don't wait to set the startup flag until we return control to the
-            # loop, because we already "started" the tasks.
-            self._startup_complete_flag.set()
+            finally:
+                # Don't wait to set the startup flag until we return control to
+                # the loop, because we already "started" the tasks.
+                self._startup_complete_flag.set()
             
             # Raise the task's exception or return its result. More likely
             # than not, this will only happen if the worker finishes first.
@@ -305,6 +327,15 @@ class TaskLooper(ManagedTask):
     
     Optionally, async def loop_stop may be defined for cleanup.
     '''
+    
+    def __init__(self, *args, **kwargs):
+        ''' Add a loop_init event to self.
+        '''
+        super().__init__(*args, **kwargs)
+        # Use the explicit loop! We may be in a different thread than the
+        # eventual start() call.
+        self._init_complete = asyncio.Event(loop=self._loop)
+        self._stop_complete = asyncio.Event(loop=self._loop)
         
     async def loop_init(self):
         ''' Endpoint for cooperative multiple inheritance.
@@ -326,6 +357,7 @@ class TaskLooper(ManagedTask):
         '''
         try:
             await self.loop_init(*args, **kwargs)
+            self._init_complete.set()
             
             while True:
                 # We need to guarantee that we give control back to the event
@@ -336,13 +368,32 @@ class TaskLooper(ManagedTask):
                 await self.loop_run()
             
         finally:
-            # Prevent cancellation of the loop stop.
-            await asyncio.shield(self.loop_stop())
+            try:
+                # Clear init.
+                self._init_complete.clear()
+                # Prevent cancellation of the loop stop.
+                await asyncio.shield(self.loop_stop())
+            
+            finally:
+                # Always, always set that stop is complete.
+                self._stop_complete.set()
+            
+    async def await_init(self):
+        ''' Awaits for loop_init to complete. Won't work from within a
+        TaskCommander.
+        '''
+        await self._init_complete.wait()
         
         
 class TaskCommander(ManagedTask):
     ''' Sets up a ManagedTask to run tasks instead of just a single
     coro.
+    
+    TODO: support addition of tasks while running.
+    TODO: support removal of tasks while running.
+    TODO: support garbage collection of completed tasks.
+    TODO: consider creating managed tasks and task loopers through the
+          commander instead of independently?
     '''
     
     def __init__(self, *args, **kwargs):
@@ -352,87 +403,140 @@ class TaskCommander(ManagedTask):
         super().__init__(*args, **kwargs)
         
         # Lookup for task -> future
-        self._futures_by_task = {}
+        self._futures_by_mgmts = {}
         # Lookup for future -> task
-        self._tasks_by_future = {}
-        # Lookup for task -> start args, kwargs
-        self._to_start = {}
+        self._mgmts_by_future = {}
+        # Lookup for order -> task, start args, start kwargs
+        # Order this so that startup completes as defined
+        self._to_start = []
         # Lookup for task -> result
         self._results = {}
+        # Lookup to see which ones are taskloopers
+        self._mgmts_with_init = set()
+        
+        # Notify that all mgmts have completed their inits.
+        self._init_complete = asyncio.Event(loop=self._loop)
+        self._stop_complete = asyncio.Event(loop=self._loop)
         
     def register_task(self, task, *args, **kwargs):
-        ''' Registers a task to start when the LoopaCommanda is run.
+        ''' Registers a task to start when the TaskCommander is run.
+        Since the task's _loop is replaced, this is an irreversable
+        action.
         '''
         if not isinstance(task, ManagedTask):
             raise TypeError('Task must be a ManagedTask instance.')
+            
+        elif task in self._to_start:
+            raise ValueError(
+                'Tasks can only be added once. Create a new instance of the ' +
+                'task to run multiple copies.'
+            )
+            
+        elif hasattr(task, '_init_complete'):
+            task._init_complete = asyncio.Event(loop=self._loop)
+            task._stop_complete = asyncio.Event(loop=self._loop)
+            self._mgmts_with_init.add(task)
         
-        self._to_start[task] = args, kwargs
+        task._loop = self._loop
+        self._to_start.append(_TaskDef(task, args, kwargs))
         
-    def deregister_task(self, task):
-        ''' Discards an existing task. Raises ValueError if the task is
-        unregistered.
+    async def _forward_harch(self):
+        ''' Get them juices flowing! Start all tasks.
+        '''
+        tasks_available = []
+        for mgmt, args, kwargs in self._to_start:
+            task = asyncio.ensure_future(
+                mgmt._execute_task(args, kwargs)
+            )
+            self._futures_by_mgmts[mgmt] = task
+            self._mgmts_by_future[task] = mgmt
+            tasks_available.append(task)
+            
+            # If it has an init, wait for that init to complete before
+            # starting the next task.
+            if mgmt in self._mgmts_with_init:
+                await mgmt._init_complete.wait()
+        
+        return tasks_available
+        
+    async def _company_halt(self, tasks):
+        ''' Stop all of the remaining running tasks in tasks. Performed
+        in reverse order to starting.
         '''
         try:
-            del self._to_start[task]
-        except KeyError:
-            raise ValueError(
-                'Task ' + repr(task) + ' is not currently registered.'
-            )
+            for task in reversed(tasks):
+                task.cancel()
+                
+                # Also clear all startup flags to ready for reuse.
+                mgmt = self._mgmts_by_future[task]
+                
+                # If the mgmt has a loop_stop, wait for it before continuing.
+                if mgmt in self._mgmts_with_init:
+                    await mgmt._stop_complete.wait()
+                
+                mgmt._startup_complete_flag.clear()
+            
+            # Only wait if we have things to wait for, or this will error out.
+            if tasks:
+                # And wait for them all to complete (note that this will
+                # delay shutdown!)
+                await asyncio.wait(
+                    fs = tasks,
+                    return_when = asyncio.ALL_COMPLETED
+                )
+        
+        # Reset everything so it's possible to run again.
+        finally:
+            results = self._results
+            self._results = {}
+            self._futures_by_mgmts = {}
+            self._mgmts_by_future = {}
+            
+        return results
         
     async def task_run(self):
         ''' Runs all of the TaskCommander's tasks.
         '''
         try:
-            tasks_available = set()
-            for taskman, (args, kwargs) in self._to_start.items():
-                task = asyncio.ensure_future(
-                    taskman._execute_task(args, kwargs)
-                )
-                self._futures_by_task[taskman] = task
-                self._tasks_by_future[task] = taskman
-                tasks_available.add(task)
+            # Get all of the tasks started.
+            tasks = await self._forward_harch()
+            
+            # Perform any post-tasklooper-init, pre-init-complete actions.
+            await self.setup()
+                
+            # All of the tasks have been started, and all of the inits have
+            # completed. Notify any waiters.
+            self._init_complete.set()
 
             # Wait for all tasks to complete (unless cancelled), but process
             # any issues as they happen.
             finished = None
                 
             # Wait until the first successful task completion
-            while tasks_available:
+            while tasks:
                 finished, pending = await asyncio.wait(
-                    fs = tasks_available,
+                    fs = tasks,
                     return_when = asyncio.FIRST_COMPLETED
                 )
             
                 # It IS possible to return more than one complete task, even
                 # though we've used FIRST_COMPLETED
                 for finished_task in finished:
-                    tasks_available.discard(finished_task)
+                    tasks.remove(finished_task)
                     self._handle_completed(finished_task)
         
         # No matter what happens, cancel all tasks at exit.
         finally:
+            # But first, run cleanup.
             try:
-                for task in self._tasks_by_future:
-                    task.cancel()
-                    # Also clear all startup flags to ready for reuse.
-                    taskman = self._tasks_by_future[task]
-                    taskman._startup_complete_flag.clear()
-                    
-                # And wait for them all to complete (note that this will delay
-                # shutdown!)
-                await asyncio.wait(
-                    fs = self._tasks_by_future,
-                    return_when = asyncio.ALL_COMPLETED
-                )
-            
-            # Reset everything so it's possible to run again.
+                await self.teardown()
+                
+            # Ensure we always clear all remaining futures.
             finally:
-                results = self._results
-                self._results = {}
-                self._futures_by_task = {}
-                self._tasks_by_future = {}
+                results = await self._company_halt(tasks)
 
-        # This may or may not be useful.
+        # This may or may not be useful. In particular, it will only be reached
+        # if all tasks finish before cancellation.
         return results
                 
     def _handle_completed(self, task):
@@ -440,26 +544,26 @@ class TaskCommander(ManagedTask):
         '''
         try:
             # Reset the task startup primitive
-            taskman = self._tasks_by_future[task]
-            taskman._startup_complete_flag.clear()
+            mgmt = self._mgmts_by_future[task]
+            mgmt._startup_complete_flag.clear()
             
             exc = task.exception()
             
             # If there's been an exception, continue waiting for the rest.
             if exc is not None:
                 logger.error(
-                    'Exception while running ' + repr(taskman) + 'w/ ' +
+                    'Exception while running ' + repr(mgmt) + 'w/ ' +
                     'traceback:\n' + ''.join(traceback.format_exception(
                         type(exc), exc, exc.__traceback__)
                     )
                 )
             
             else:
-                self._results[taskman] = task.result()
+                self._results[mgmt] = task.result()
         
         # Don't really do anything with these?
         except asyncio.CancelledError:
-            logger.info('Task cancelled: ' + repr(taskman))
+            logger.info('Task cancelled: ' + repr(mgmt))
             
     async def _kill_tasks(self):
         ''' Kill all remaining tasks. Call during shutdown. Will log any
@@ -474,6 +578,21 @@ class TaskCommander(ManagedTask):
         
         if len(all_tasks) > 0:
             await asyncio.wait(all_tasks, timeout=self._death_timeout)
+            
+    async def await_init(self):
+        ''' Awaits for all TaskLooper (or similar) loop_inits to finish.
+        '''
+        await self._init_complete.wait()
+        
+    async def teardown(self):
+        ''' Called after cancellation is started, but before it takes
+        effect. Use it to create a finalizer, if desired.
+        '''
+        
+    async def setup(self):
+        ''' Called after all tasks have been started, and all tasklooper
+        (or similar) instances have passed loop init.
+        '''
             
             
 class Aengel:
@@ -561,3 +680,12 @@ class Aengel:
                             ''.join(traceback.format_exc())
                         )
                 self._dead = True
+
+
+class NoopLoop(TaskLooper):
+    ''' Make a dummy event loop for manipulation of stuff. Intended for
+    use in testing.
+    '''
+    
+    async def loop_run(self):
+        await asyncio.sleep(.1)

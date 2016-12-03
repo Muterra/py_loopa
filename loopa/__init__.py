@@ -30,6 +30,13 @@ loopa: Arduino-esque event loop app framework, and other utilities.
 ------------------------------------------------------
 '''
 
+# Submodules
+from . import exceptions
+from . import utils
+from . import core
+
+from .core import *
+
 
 # ###############################################
 # Boilerplate
@@ -42,24 +49,22 @@ import logging
 from logging import NullHandler
 logging.getLogger(__name__).addHandler(NullHandler())
 
+
 # Control * imports.
 __all__ = [
     'ManagedTask',
     'TaskLooper',
     'TaskCommander',
+    'NoopLoop',
+    'exceptions',
+    'utils',
+    'core'
 ]
 
 
 # ###############################################
 # Library
 # ###############################################
-
-# Submodules
-from . import exceptions
-from . import utils
-from . import core
-
-from .core import *
 
 # from ._signals_common import IGNORE_SIGNAL
 # from ._signals_common import send
