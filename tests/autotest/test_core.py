@@ -119,7 +119,7 @@ class TaskLooperTester1(TaskLooper):
         self.runner += 1
         # Call stop exactly once, at the limit
         if self.runner == self.limit:
-            await self.stop()
+            self.stop()
         # If we exceed it sufficiently, raise to exit.
         elif self.runner >= (2 * self.limit):
             raise asyncio.CancelledError()

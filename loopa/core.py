@@ -40,7 +40,7 @@ import collections
 import inspect
 
 # In-package deps
-# from .utils import await_coroutine_threadsafe
+from .utils import await_coroutine_threadsafe
 # from .exceptions import LoopaException
 
 
@@ -177,6 +177,9 @@ class ManagedTask:
             # Declare the thread as nothing.
             self._thread = None
             
+        # This controls blocking for async stuff on exit
+        self._exiting_task = asyncio.Event(loop=self._loop)
+            
     def start(self, *args, **kwargs):
         ''' Dispatches start() to self._start() or self._thread.start(),
         as appropriate. Passes *args and **kwargs along to the task_run
@@ -236,6 +239,9 @@ class ManagedTask:
         # Give these an extra layer of protection so that the close() caller
         # can always return, even if closing the loop errored for some reason
         finally:
+            # Only bother doing this if being called directly (not from within
+            # a parent commander)
+            self._exiting_task = None
             self._startup_complete_flag.clear()
             self._shutdown_complete_flag.set()
         
@@ -249,7 +255,8 @@ class ManagedTask:
         '''
         if not self._startup_complete_flag.is_set():
             raise RuntimeError('Cannot stop before startup is complete.')
-            
+        
+        logger.debug('Cancelling task via stop: ' + repr(self))
         self._task.cancel()
         
     def stop_threadsafe_nowait(self):
@@ -294,12 +301,18 @@ class ManagedTask:
                 result = await asyncio.wait_for(self._task, timeout=None)
             
             except asyncio.CancelledError:
+                logger.debug('Cancelling task: ' + repr(self))
+                self._task.cancel()
                 result = None
                 
             return result
             
         # Reset the termination flag on the way out, just in case.
+        # NOTE THAT WE MAY HAVE THINGS WAITING FOR US TO EXIT, but that the
+        # loop itself will stop running when this coro completes! So we need
+        # to wait for any waiters to clear.
         finally:
+            self._exiting_task.set()
             self._task = None
             
     def _abort(self):
@@ -335,7 +348,6 @@ class TaskLooper(ManagedTask):
         # Use the explicit loop! We may be in a different thread than the
         # eventual start() call.
         self._init_complete = asyncio.Event(loop=self._loop)
-        self._stop_complete = asyncio.Event(loop=self._loop)
         
     async def loop_init(self):
         ''' Endpoint for cooperative multiple inheritance.
@@ -356,7 +368,9 @@ class TaskLooper(ManagedTask):
         ''' Wraps up all of the loop stuff.
         '''
         try:
+            logger.debug('Loop init starting: ' + repr(self))
             await self.loop_init(*args, **kwargs)
+            logger.debug('Loop init finished: ' + repr(self))
             self._init_complete.set()
             
             while True:
@@ -366,17 +380,27 @@ class TaskLooper(ManagedTask):
                 # TODO: is there a better way than this?
                 await asyncio.sleep(0)
                 await self.loop_run()
+                
+        except asyncio.CancelledError:
+            # Don't log the cancellation error, because it's expected shutdown
+            # behavior.
+            logger.debug('Looped task cancelled.')
+            raise
+                
+        except Exception as exc:
+            logger.error(
+                'Error while running looped task: ' + repr(self) +
+                ' w/ traceback:\n' + ''.join(traceback.format_exc())
+            )
+            raise
             
         finally:
-            try:
-                # Clear init.
-                self._init_complete.clear()
-                # Prevent cancellation of the loop stop.
-                await asyncio.shield(self.loop_stop())
-            
-            finally:
-                # Always, always set that stop is complete.
-                self._stop_complete.set()
+            # Clear init.
+            self._init_complete.clear()
+            logger.debug('Loop stop starting: ' + repr(self))
+            # Prevent cancellation of the loop stop.
+            await asyncio.shield(self.loop_stop())
+            logger.debug('Loop stop finished: ' + repr(self))
             
     async def await_init(self):
         ''' Awaits for loop_init to complete. Won't work from within a
@@ -396,7 +420,7 @@ class TaskCommander(ManagedTask):
           commander instead of independently?
     '''
     
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, suppress_child_exceptions=False, **kwargs):
         ''' In addition to super(), we also need to add in some variable
         inits.
         '''
@@ -418,6 +442,10 @@ class TaskCommander(ManagedTask):
         self._init_complete = asyncio.Event(loop=self._loop)
         self._stop_complete = asyncio.Event(loop=self._loop)
         
+        # This determines if a completed task that ended in an exception is
+        # just logged, or if it will bubble up and end the entire commander
+        self.suppress_child_exceptions = suppress_child_exceptions
+        
     def register_task(self, task, *args, **kwargs):
         ''' Registers a task to start when the TaskCommander is run.
         Since the task's _loop is replaced, this is an irreversable
@@ -437,6 +465,8 @@ class TaskCommander(ManagedTask):
             task._stop_complete = asyncio.Event(loop=self._loop)
             self._mgmts_with_init.add(task)
         
+        # This controls blocking for async stuff on exit
+        task._exiting_task = asyncio.Event(loop=self._loop)
         task._loop = self._loop
         self._to_start.append(_TaskDef(task, args, kwargs))
         
@@ -464,18 +494,17 @@ class TaskCommander(ManagedTask):
         in reverse order to starting.
         '''
         try:
+            logger.debug('Stopping all remaining tasks: ' + repr(self))
             for task in reversed(tasks):
                 task.cancel()
                 
-                # Also clear all startup flags to ready for reuse.
+                # Wait for the task to exit and then clear all startup flags.
                 mgmt = self._mgmts_by_future[task]
-                
-                # If the mgmt has a loop_stop, wait for it before continuing.
-                if mgmt in self._mgmts_with_init:
-                    await mgmt._stop_complete.wait()
-                
+                logger.debug(repr(self) + ' awaiting task exit: ' + repr(mgmt))
+                await mgmt._exiting_task.wait()
                 mgmt._startup_complete_flag.clear()
             
+            # Wait until all tasks have finished closure.
             # Only wait if we have things to wait for, or this will error out.
             if tasks:
                 # And wait for them all to complete (note that this will
@@ -484,6 +513,12 @@ class TaskCommander(ManagedTask):
                     fs = tasks,
                     return_when = asyncio.ALL_COMPLETED
                 )
+        
+        except Exception:
+            logger.error(
+                'Error while stopping remaining tasks: ' + repr(self) + '\n' +
+                ''.join(traceback.format_exc())
+            )
         
         # Reset everything so it's possible to run again.
         finally:
@@ -499,7 +534,8 @@ class TaskCommander(ManagedTask):
         '''
         try:
             # Get all of the tasks started.
-            tasks = await self._forward_harch()
+            all_tasks = await self._forward_harch()
+            incomplete_tasks = set(all_tasks)
             
             # Perform any post-tasklooper-init, pre-init-complete actions.
             await self.setup()
@@ -513,17 +549,30 @@ class TaskCommander(ManagedTask):
             finished = None
                 
             # Wait until the first successful task completion
-            while tasks:
+            while incomplete_tasks:
                 finished, pending = await asyncio.wait(
-                    fs = tasks,
+                    fs = incomplete_tasks,
                     return_when = asyncio.FIRST_COMPLETED
                 )
             
                 # It IS possible to return more than one complete task, even
                 # though we've used FIRST_COMPLETED
                 for finished_task in finished:
-                    tasks.remove(finished_task)
+                    logger.debug('Task finished: ' + repr(finished_task))
                     self._handle_completed(finished_task)
+                    incomplete_tasks.remove(finished_task)
+                    
+        except asyncio.CancelledError:
+            # Don't log the traceback itself.
+            logger.debug('TaskCommander cancelled: ' + repr(self))
+            raise
+                    
+        except Exception as exc:
+            logger.error(
+                'Error during task command w/ traceback:\n' +
+                ''.join(traceback.format_exc())
+            )
+            raise
         
         # No matter what happens, cancel all tasks at exit.
         finally:
@@ -531,9 +580,13 @@ class TaskCommander(ManagedTask):
             try:
                 await self.teardown()
                 
-            # Ensure we always clear all remaining futures.
+            # Ensure we always clear all futures, regardless of whether or not
+            # they are already completed, since cancellation is idempotent.
+            # this way, we can avoid a race condition between tasks that were
+            # already cancelled or finished above, but who have not yet
+            # completed shutdown, and the loop itself stopping.
             finally:
-                results = await self._company_halt(tasks)
+                results = await self._company_halt(all_tasks)
 
         # This may or may not be useful. In particular, it will only be reached
         # if all tasks finish before cancellation.
@@ -551,19 +604,27 @@ class TaskCommander(ManagedTask):
             
             # If there's been an exception, continue waiting for the rest.
             if exc is not None:
-                logger.error(
-                    'Exception while running ' + repr(mgmt) + 'w/ ' +
-                    'traceback:\n' + ''.join(traceback.format_exception(
-                        type(exc), exc, exc.__traceback__)
+                # Note cancellations, but don't propagate them backwards.
+                if isinstance(exc, asyncio.CancelledError):
+                    logger.info('Daughter task cancelled: ' + repr(mgmt))
+                
+                elif self.suppress_child_exceptions:
+                    logger.error(
+                        'Exception while running ' + repr(mgmt) + 'w/ ' +
+                        'traceback:\n' + ''.join(traceback.format_exception(
+                            type(exc), exc, exc.__traceback__)
+                        )
                     )
-                )
+                
+                else:
+                    raise exc
             
             else:
                 self._results[mgmt] = task.result()
         
         # Don't really do anything with these?
         except asyncio.CancelledError:
-            logger.info('Task cancelled: ' + repr(mgmt))
+            logger.info('Task completion cancelled: ' + repr(mgmt))
             
     async def _kill_tasks(self):
         ''' Kill all remaining tasks. Call during shutdown. Will log any
