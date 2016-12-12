@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 
 _TaskDef = collections.namedtuple(
     typename = '_TaskDef',
-    field_names = ('mgmt', 'args', 'kwargs'),
+    field_names = ('args', 'kwargs'),
 )
 
 
@@ -373,18 +373,27 @@ class TaskLooper(ManagedTask):
             logger.debug('Loop init finished: ' + repr(self))
             self._init_complete.set()
             
-            while True:
-                # We need to guarantee that we give control back to the event
-                # loop at least once (even if running all synchronous code) to
-                # catch any cancellations.
-                # TODO: is there a better way than this?
-                await asyncio.sleep(0)
-                await self.loop_run()
+            try:
+                while True:
+                    # We need to guarantee that we give control back to the
+                    # event loop at least once (even if running all synchronous
+                    # code) to catch any cancellations.
+                    # TODO: is there a better way than this?
+                    await asyncio.sleep(0)
+                    await self.loop_run()
+            
+            finally:
+                # Clear init.
+                self._init_complete.clear()
+                logger.debug('Loop stop starting: ' + repr(self))
+                # Prevent cancellation of the loop stop.
+                await asyncio.shield(self.loop_stop())
+                logger.debug('Loop stop finished: ' + repr(self))
                 
         except asyncio.CancelledError:
             # Don't log the cancellation error, because it's expected shutdown
             # behavior.
-            logger.debug('Looped task cancelled.')
+            logger.debug('Looped task cancelled: ' + repr(self))
             raise
                 
         except Exception as exc:
@@ -393,14 +402,6 @@ class TaskLooper(ManagedTask):
                 ' w/ traceback:\n' + ''.join(traceback.format_exc())
             )
             raise
-            
-        finally:
-            # Clear init.
-            self._init_complete.clear()
-            logger.debug('Loop stop starting: ' + repr(self))
-            # Prevent cancellation of the loop stop.
-            await asyncio.shield(self.loop_stop())
-            logger.debug('Loop stop finished: ' + repr(self))
             
     async def await_init(self):
         ''' Awaits for loop_init to complete. Won't work from within a
@@ -433,6 +434,7 @@ class TaskCommander(ManagedTask):
         # Lookup for order -> task, start args, start kwargs
         # Order this so that startup completes as defined
         self._to_start = []
+        self._invocations = {}
         # Lookup for task -> result
         self._results = {}
         # Lookup to see which ones are taskloopers
@@ -446,7 +448,8 @@ class TaskCommander(ManagedTask):
         # just logged, or if it will bubble up and end the entire commander
         self.suppress_child_exceptions = suppress_child_exceptions
         
-    def register_task(self, task, *args, **kwargs):
+    def register_task(self, task, *args, before_task=None, after_task=None,
+                      **kwargs):
         ''' Registers a task to start when the TaskCommander is run.
         Since the task's _loop is replaced, this is an irreversable
         action.
@@ -460,7 +463,34 @@ class TaskCommander(ManagedTask):
                 'task to run multiple copies.'
             )
             
-        elif hasattr(task, '_init_complete'):
+        elif bool(before_task) & bool(after_task):
+            raise ValueError(
+                'Task may be inserted before or after another task, but not ' +
+                'both!'
+            )
+        
+        else:
+            self._insert_task(task, before_task, after_task, args, kwargs)
+        
+    def _insert_task(self, task, before_task, after_task, args, kwargs):
+        ''' Perform actual task insertion.
+        '''
+        if before_task is not None:
+            target_index = self._to_start.index(before_task)
+            self._to_start.insert(target_index, task)
+            
+        elif after_task is not None:
+            target_index = self._to_start.index(after_task) + 1
+            self._to_start.insert(target_index, task)
+            
+        else:
+            self._to_start.append(task)
+            
+        self._invocations[task] = _TaskDef(args, kwargs)
+        
+        # Wait to do this until after inserting task, so that any errors will
+        # prevent modification to the original task.
+        if hasattr(task, '_init_complete'):
             task._init_complete = asyncio.Event(loop=self._loop)
             task._stop_complete = asyncio.Event(loop=self._loop)
             self._mgmts_with_init.add(task)
@@ -468,13 +498,13 @@ class TaskCommander(ManagedTask):
         # This controls blocking for async stuff on exit
         task._exiting_task = asyncio.Event(loop=self._loop)
         task._loop = self._loop
-        self._to_start.append(_TaskDef(task, args, kwargs))
         
     async def _forward_harch(self):
         ''' Get them juices flowing! Start all tasks.
         '''
         tasks_available = []
-        for mgmt, args, kwargs in self._to_start:
+        for mgmt in self._to_start:
+            args, kwargs = self._invocations[mgmt]
             task = asyncio.ensure_future(
                 mgmt._execute_task(args, kwargs)
             )
