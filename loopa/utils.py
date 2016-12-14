@@ -101,10 +101,20 @@ def harvest_background_task(task):
     
     # The task did not complete successfully. Log the error.
     else:
-        logger.error(''.join((
-            'Background task DID NOT COMPLETE. Traceback:\n',
-            *traceback.format_exception(type(exc), exc, exc.__traceback__)
-        )))
+        creation_trace = task._source_traceback
+        if creation_trace:
+            creation_info = 'Task created at: \n' + \
+                            ''.join(creation_trace.format()) + '\n'
+            
+        else:
+            creation_info = ''
+        
+        logger.error(
+            'Background task DID NOT COMPLETE. ' + creation_info +
+            'Exception traceback:\n' +
+            ''.join(traceback.format_exception(type(exc), exc,
+                                               exc.__traceback__))
+        )
         
         
 def make_background_future(*args, **kwargs):
