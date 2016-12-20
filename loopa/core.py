@@ -541,7 +541,9 @@ class TaskCommander(ManagedTask):
                 # delay shutdown!)
                 await asyncio.wait(
                     fs = tasks,
-                    return_when = asyncio.ALL_COMPLETED
+                    return_when = asyncio.ALL_COMPLETED,
+                    # TODO: figure out some way to forcibly close stuff
+                    timeout = None
                 )
         
         except Exception:
